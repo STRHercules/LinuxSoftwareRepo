@@ -438,6 +438,40 @@ Categories=Development;IDE;
 EOF
 }
 
+# ---------- GitHub Desktop (shiftkey .deb) ----------
+install_github_desktop_deb() {
+  local url="${GITHUB_DESKTOP_DEB_URL:-https://github.com/shiftkey/desktop/releases/download/release-3.4.13-linux1/GitHubDesktop-linux-amd64-3.4.13-linux1.deb}"
+
+  if [[ "$PM" != "apt" ]]; then
+    warn "GitHub Desktop install is currently implemented for apt (.deb) only (skipping)."
+    return
+  fi
+
+  if [[ "$ARCH" != "x86_64" && "$ARCH" != "amd64" ]]; then
+    warn "GitHub Desktop .deb is amd64; you are: $ARCH (skipping)."
+    return
+  fi
+
+  if dpkg -s github-desktop >/dev/null 2>&1; then
+    log "GitHub Desktop already installed."
+    return
+  fi
+
+  section "GitHub Desktop"
+  log "Downloading GitHub Desktop (.deb)..."
+  local tmp_deb
+  tmp_deb="$(mktemp -t github-desktop.XXXXXX.deb)"
+  curl -LfsS -o "$tmp_deb" "$url" || { warn "GitHub Desktop download failed (skipping)."; rm -f "$tmp_deb"; return; }
+
+  log "Installing GitHub Desktop..."
+  if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "$tmp_deb"; then
+    ok "GitHub Desktop installed"
+  else
+    warn "GitHub Desktop install failed (skipping)."
+  fi
+  rm -f "$tmp_deb"
+}
+
 # ---------- Zsh plugins fallback ----------
 install_zsh_plugins_fallback() {
   local base="$HOME/.zsh/plugins"
@@ -597,7 +631,7 @@ log "Distro: ${c_bold}${OS_ID}${c_reset} (like: ${OS_LIKE:-n/a})"
 log "Arch: ${c_bold}${ARCH}${c_reset}"
 
 # Total progress steps (roughly: big phases + key tooling).
-progress_init 16 "Initializing"
+progress_init 17 "Initializing"
 need_sudo
 progress_advance "sudo ready"
 
@@ -691,6 +725,7 @@ case "$PM" in
     progress_advance "GitHub CLI"
     progress_advance "Browsers (skipped)"
     progress_advance "Java (Temurin)"
+    progress_advance "GitHub Desktop (skipped)"
     ;;
   pacman)
     section "Packages (pacman)"
@@ -715,6 +750,7 @@ case "$PM" in
     progress_advance "GitHub CLI"
     progress_advance "Browsers (skipped)"
     progress_advance "Java (skipped)"
+    progress_advance "GitHub Desktop (skipped)"
     ;;
 esac
 
@@ -734,6 +770,8 @@ install_nvm
 progress_advance "NVM"
 install_node_lts_via_nvm
 progress_advance "Node.js (LTS)"
+install_github_desktop_deb
+progress_advance "GitHub Desktop"
 install_zsh_plugins_fallback
 progress_advance "Zsh plugins"
 ensure_bat_command

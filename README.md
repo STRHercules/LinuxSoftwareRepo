@@ -38,8 +38,18 @@ On every run, the script:
    ```
 3. Run it:
    ```bash
-   ./bootstrap.sh
+   sudo ./bootstrap.sh
    ```
+4. Open a new terminal.
+5. Confirm the script worked;
+    ```
+    echo $SHELL
+    zsh --version
+    starship --version
+    nvm --version
+    node -v
+    npm -v
+    ```
 
 ### After it finishes
 
