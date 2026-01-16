@@ -15,12 +15,16 @@ set -Eeuo pipefail
 UI_COLOR=0
 UI_UNICODE=0
 UI_PROGRESS=1
+UI_BANNER=1
 
 if [[ -t 1 && "${NO_COLOR:-}" == "" && "${TERM:-}" != "dumb" ]]; then
   UI_COLOR=1
 fi
 if [[ "${NO_PROGRESS:-}" != "" || ! -t 1 ]]; then
   UI_PROGRESS=0
+fi
+if [[ "${NO_BANNER:-}" != "" || ! -t 1 || "${TERM:-}" == "dumb" ]]; then
+  UI_BANNER=0
 fi
 
 _locale="${LC_ALL:-${LC_CTYPE:-${LANG:-}}}"
@@ -71,6 +75,25 @@ PROGRESS_TOTAL=0
 PROGRESS_CURRENT=0
 PROGRESS_LABEL=""
 
+cleanup_cmds=()
+add_cleanup() { cleanup_cmds+=("$1"); }
+on_exit() {
+  local cmd
+  for cmd in "${cleanup_cmds[@]}"; do
+    eval "$cmd" >/dev/null 2>&1 || true
+  done
+}
+trap on_exit EXIT
+
+repeat_char() {
+  local count="$1"
+  local ch="$2"
+  ((count <= 0)) && return 0
+  local spaces
+  printf -v spaces '%*s' "$count" ''
+  printf '%s' "${spaces// /$ch}"
+}
+
 progress_clear_line() {
   ((UI_PROGRESS)) || return 0
   ((PROGRESS_ACTIVE)) || return 0
@@ -104,8 +127,8 @@ progress_render() {
   fi
 
   local bar=""
-  if ((filled > 0)); then bar+=$(printf "%*s" "$filled" "" | tr ' ' "$bar_fill"); fi
-  if ((empty > 0)); then bar+=$(printf "%*s" "$empty" "" | tr ' ' "$bar_empty"); fi
+  if ((filled > 0)); then bar+="$(repeat_char "$filled" "$bar_fill")"; fi
+  if ((empty > 0)); then bar+="$(repeat_char "$empty" "$bar_empty")"; fi
 
   local prefix=""
   local suffix=""
@@ -143,6 +166,50 @@ progress_finish() {
   progress_render
   printf '\n'
   PROGRESS_ACTIVE=0
+}
+
+banner_draw() {
+  ((UI_BANNER)) || return 0
+
+  printf '\033[2J\033[H'
+
+  local black=""
+  local blue=""
+  if ((UI_COLOR)); then
+    black="${c_gray}"
+    blue="${c_blue}"
+  fi
+
+  printf '%b' "${black}"
+  cat <<'EOF'
+  ██▓███   ██▓    ▄▄▄       ███▄    █ ▓█████▄▄▄█████▓    ██ ▄█▀▄▄▄       ██▓
+  ▓██░  ██▒▓██▒   ▒████▄     ██ ▀█   █ ▓█   ▀▓  ██▒ ▓▒    ██▄█▒▒████▄    ▓██▒
+  ▓██░ ██▓▒▒██░   ▒██  ▀█▄  ▓██  ▀█ ██▒▒███  ▒ ▓██░ ▒░   ▓███▄░▒██  ▀█▄  ▒██▒
+  ▒██▄█▓▒ ▒▒██░   ░██▄▄▄▄██ ▓██▒  ▐▌██▒▒▓█  ▄░ ▓██▓ ░    ▓██ █▄░██▄▄▄▄██ ░██░
+  ▒██▒ ░  ░░██████▒▓█   ▓██▒▒██░   ▓██░░▒████▒ ▒██▒ ░    ▒██▒ █▄▓█   ▓██▒░██░
+  ▒▓▒░ ░  ░░ ▒░▓  ░▒▒   ▓▒█░░ ▒░   ▒ ▒ ░░ ▒░ ░ ▒ ░░      ▒ ▒▒ ▓▒▒▒   ▓▒█░░▓  
+  ░▒ ░     ░ ░ ▒  ░ ▒   ▒▒ ░░ ░░   ░ ▒░ ░ ░  ░   ░       ░ ░▒ ▒░ ▒   ▒▒ ░ ▒ ░
+  ░░         ░ ░    ░   ▒      ░   ░ ░    ░    ░         ░ ░░ ░  ░   ▒    ▒ ░
+              ░  ░     ░  ░         ░    ░  ░           ░  ░        ░  ░ ░    
+EOF
+  printf '%b%s%b\n' "${blue}" "    Sit back while your software is installed." "${c_reset}"
+}
+
+banner_enable_scroll_region() {
+  ((UI_BANNER)) || return 0
+
+  local header_lines=7
+  local rows=24
+  if have tput; then rows="$(tput lines 2>/dev/null || echo 24)"; fi
+  [[ "$rows" =~ ^[0-9]+$ ]] || rows=24
+  if ((rows <= header_lines + 1)); then
+    return 0
+  fi
+
+  printf '\033[?25l'
+  printf '\033[%d;%dr' "$((header_lines + 1))" "$rows"
+  printf '\033[%d;1H' "$((header_lines + 1))"
+  add_cleanup "printf '\\033[r\\033[?25h'"
 }
 
 _msg() {
@@ -187,7 +254,7 @@ need_sudo() {
   # This exits automatically when the main process ends.
   ( while true; do sudo -n true; sleep 60; kill -0 "$$" 2>/dev/null || exit; done ) 2>/dev/null &
   SUDO_KEEPALIVE_PID=$!
-  trap 'kill "${SUDO_KEEPALIVE_PID:-}" 2>/dev/null || true' EXIT
+  add_cleanup 'kill "${SUDO_KEEPALIVE_PID:-}" 2>/dev/null || true'
   ok "sudo access granted"
 }
 
@@ -338,7 +405,7 @@ setup_adoptium_repo_apt() {
 install_temurin_25() {
   log "Installing Temurin JDK 25..."
   if [[ "$PM" == "apt" ]]; then
-    sudo apt-get update -y
+    apt_update
     if ! sudo DEBIAN_FRONTEND=noninteractive apt-get install -y temurin-25-jdk; then
       warn "temurin-25-jdk install failed. Falling back to distro OpenJDK if available..."
       apt_install_optional openjdk-25-jdk openjdk-21-jdk
@@ -348,6 +415,115 @@ install_temurin_25() {
   else
     warn "Temurin automation not implemented for pacman in this script."
   fi
+}
+
+# ---------- Shell (Nerd Font + Oh My Zsh) ----------
+ensure_zsh_installed() {
+  if have zsh; then
+    log "zsh already installed."
+    return 0
+  fi
+
+  log "Installing zsh..."
+  case "$PM" in
+    apt) apt_install_optional zsh ;;
+    dnf) sudo dnf install -y zsh || true ;;
+    pacman) sudo pacman -S --noconfirm --needed zsh || true ;;
+  esac
+}
+
+install_nerd_font() {
+  if [[ "${INSTALL_NERD_FONT:-1}" == "0" ]]; then
+    log "Nerd Font disabled via INSTALL_NERD_FONT=0 (skipping)."
+    return
+  fi
+
+  if ! have curl; then
+    warn "curl not available; cannot install Nerd Font (skipping)."
+    return
+  fi
+
+  if ! have unzip; then
+    warn "unzip not available; cannot install Nerd Font (skipping)."
+    return
+  fi
+
+  if ! have fc-cache; then
+    case "$PM" in
+      apt) apt_install_optional fontconfig ;;
+      dnf) sudo dnf install -y fontconfig || true ;;
+      pacman) sudo pacman -S --noconfirm --needed fontconfig || true ;;
+    esac
+  fi
+
+  local font_name="${NERD_FONT_NAME:-FiraCode}"
+  local nerd_fonts_ver="${NERD_FONTS_VERSION:-v3.3.0}"
+  local url="${NERD_FONT_URL:-https://github.com/ryanoasis/nerd-fonts/releases/download/${nerd_fonts_ver}/${font_name}.zip}"
+
+  if have fc-list && fc-list 2>/dev/null | grep -qiE "${font_name}[[:space:]]+Nerd Font|${font_name}NerdFont"; then
+    log "Nerd Font already installed: ${font_name}"
+    return
+  fi
+
+  section "Nerd Font"
+  log "Installing ${font_name} Nerd Font into ~/.local/share/fonts..."
+  local tmp_dir zip_path dest_dir
+  tmp_dir="$(mktemp -d -t nerd-font.XXXXXX)"
+  zip_path="$tmp_dir/${font_name}.zip"
+  dest_dir="$HOME/.local/share/fonts/NerdFonts/${font_name}"
+
+  mkdir -p "$dest_dir"
+  curl -LfsS -o "$zip_path" "$url" || { warn "Nerd Font download failed (skipping)."; rm -rf "$tmp_dir"; return; }
+
+  unzip -q -o "$zip_path" -d "$tmp_dir/unz" || { warn "Nerd Font unzip failed (skipping)."; rm -rf "$tmp_dir"; return; }
+  find "$tmp_dir/unz" -maxdepth 1 -type f -name '*.ttf' -exec cp -f {} "$dest_dir/" \; >/dev/null 2>&1 || true
+
+  if have fc-cache; then
+    fc-cache -f "$dest_dir" >/dev/null 2>&1 || true
+  fi
+
+  rm -rf "$tmp_dir"
+  ok "Nerd Font installed: ${font_name}"
+}
+
+install_oh_my_zsh() {
+  if [[ "${INSTALL_OH_MY_ZSH:-1}" == "0" ]]; then
+    log "Oh My Zsh disabled via INSTALL_OH_MY_ZSH=0 (skipping)."
+    return
+  fi
+
+  if [[ -d "$HOME/.oh-my-zsh" ]]; then
+    log "Oh My Zsh already installed."
+    return
+  fi
+
+  ensure_zsh_installed
+
+  if ! have zsh; then
+    warn "zsh not available; cannot install Oh My Zsh (skipping)."
+    return
+  fi
+  if ! have git; then
+    warn "git not available; cannot install Oh My Zsh (skipping)."
+    return
+  fi
+  if ! have curl; then
+    warn "curl not available; cannot install Oh My Zsh (skipping)."
+    return
+  fi
+
+  section "Oh My Zsh"
+  log "Installing Oh My Zsh..."
+
+  local keep_zshrc_env=""
+  if [[ -f "$HOME/.zshrc" ]]; then
+    keep_zshrc_env="KEEP_ZSHRC=yes"
+    log "Detected existing ~/.zshrc; keeping it as-is."
+  fi
+
+  RUNZSH=no CHSH=no ${keep_zshrc_env} sh -c \
+    "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended \
+    || warn "Oh My Zsh install failed (skipping)."
 }
 
 # ---------- Starship ----------
@@ -438,44 +614,386 @@ Categories=Development;IDE;
 EOF
 }
 
+apt_install_deb_from_url() {
+  local label="$1"
+  local dpkg_name="$2"
+  local url="$3"
+  local arch_desc="${4:-}"
+
+  if [[ "$PM" != "apt" ]]; then
+    warn "${label} install is currently implemented for apt (.deb) only (skipping)."
+    return 0
+  fi
+
+  if [[ -n "$arch_desc" && "$ARCH" != "x86_64" && "$ARCH" != "amd64" ]]; then
+    warn "${label} .deb is ${arch_desc}; you are: $ARCH (skipping)."
+    return 0
+  fi
+
+  if dpkg -s "$dpkg_name" >/dev/null 2>&1; then
+    log "${label} already installed."
+    return 0
+  fi
+
+  section "$label"
+  log "Downloading ${label} (.deb)..."
+  local tmp_deb
+  tmp_deb="$(mktemp -t "${dpkg_name}".XXXXXX.deb)"
+  curl -LfsS -o "$tmp_deb" "$url" || { warn "${label} download failed (skipping)."; rm -f "$tmp_deb"; return 0; }
+
+  log "Installing ${label}..."
+  if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "$tmp_deb"; then
+    ok "${label} installed"
+  else
+    warn "${label} install failed (skipping)."
+  fi
+  rm -f "$tmp_deb"
+}
+
 # ---------- GitHub Desktop (shiftkey .deb) ----------
 install_github_desktop_deb() {
   local url="${GITHUB_DESKTOP_DEB_URL:-https://github.com/shiftkey/desktop/releases/download/release-3.4.13-linux1/GitHubDesktop-linux-amd64-3.4.13-linux1.deb}"
+  apt_install_deb_from_url "GitHub Desktop" "github-desktop" "$url" "amd64"
+}
 
-  if [[ "$PM" != "apt" ]]; then
-    warn "GitHub Desktop install is currently implemented for apt (.deb) only (skipping)."
+# ---------- Deskflow (.deb) ----------
+install_deskflow_deb() {
+  local url="${DESKFLOW_DEB_URL:-https://github.com/deskflow/deskflow/releases/download/v1.25.0/deskflow-1.25.0-ubuntu-questing-x86_64.deb}"
+
+  if [[ "${INSTALL_DESKFLOW:-1}" == "0" ]]; then
+    log "Deskflow disabled via INSTALL_DESKFLOW=0 (skipping)."
+    return
+  fi
+  apt_install_deb_from_url "Deskflow" "deskflow" "$url" "x86_64"
+}
+
+# ---------- Wallpapers (repo -> ~/Pictures/Wallpapers + GNOME slideshow) ----------
+xml_escape() {
+  local s="$1"
+  s="${s//&/&amp;}"
+  s="${s//</&lt;}"
+  s="${s//>/&gt;}"
+  s="${s//\"/&quot;}"
+  s="${s//\'/&apos;}"
+  printf '%s' "$s"
+}
+
+copy_wallpapers_to_pictures() {
+  if [[ "${INSTALL_WALLPAPERS:-1}" == "0" ]]; then
+    log "Wallpapers disabled via INSTALL_WALLPAPERS=0 (skipping)."
     return
   fi
 
-  if [[ "$ARCH" != "x86_64" && "$ARCH" != "amd64" ]]; then
-    warn "GitHub Desktop .deb is amd64; you are: $ARCH (skipping)."
+  if [[ -z "${SCRIPT_DIR:-}" ]]; then
+    warn "SCRIPT_DIR not set; cannot locate repo Wallpapers directory (skipping)."
     return
   fi
 
-  if dpkg -s github-desktop >/dev/null 2>&1; then
-    log "GitHub Desktop already installed."
+  local src="${SCRIPT_DIR}/Wallpapers"
+  if [[ ! -d "$src" ]]; then
+    warn "No Wallpapers directory found next to bootstrap.sh at: $src (skipping)."
     return
   fi
 
-  section "GitHub Desktop"
-  log "Downloading GitHub Desktop (.deb)..."
-  local tmp_deb
-  tmp_deb="$(mktemp -t github-desktop.XXXXXX.deb)"
-  curl -LfsS -o "$tmp_deb" "$url" || { warn "GitHub Desktop download failed (skipping)."; rm -f "$tmp_deb"; return; }
+  local dest="$HOME/Pictures/Wallpapers"
+  section "Wallpapers"
+  log "Copying repo wallpapers into: $dest"
+  mkdir -p "$dest"
 
-  log "Installing GitHub Desktop..."
-  if sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "$tmp_deb"; then
-    ok "GitHub Desktop installed"
+  local overwrite="${WALLPAPERS_OVERWRITE:-0}"
+  if have rsync; then
+    if [[ "$overwrite" == "1" ]]; then
+      rsync -a --delete "$src/." "$dest/" || warn "rsync copy failed (skipping)."
+    else
+      rsync -a --ignore-existing "$src/." "$dest/" || warn "rsync copy failed (skipping)."
+    fi
   else
-    warn "GitHub Desktop install failed (skipping)."
+    if [[ "$overwrite" == "1" ]]; then
+      cp -a "$src/." "$dest/" 2>/dev/null || warn "cp copy failed (skipping)."
+    else
+      cp -an "$src/." "$dest/" 2>/dev/null || cp -a "$src/." "$dest/" 2>/dev/null || warn "cp copy failed (skipping)."
+    fi
   fi
-  rm -f "$tmp_deb"
+
+  local count
+  count="$(find "$dest" -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d ' ')"
+  ok "Wallpapers ready (${count} files)"
+}
+
+generate_gnome_slideshow_xml() {
+  local images_dir="$1"
+  local out_xml="$2"
+  local static_seconds="${WALLPAPER_STATIC_SECONDS:-300}"
+  local transition_seconds="${WALLPAPER_TRANSITION_SECONDS:-5}"
+
+  mapfile -t images < <(
+    find "$images_dir" -maxdepth 1 -type f \
+      \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \) \
+      -printf '%p\n' 2>/dev/null | sort
+  )
+
+  if ((${#images[@]} < 2)); then
+    warn "Need at least 2 wallpapers to generate a slideshow XML (found ${#images[@]})."
+    return 1
+  fi
+
+  mkdir -p "$(dirname "$out_xml")"
+  local tmp_xml
+  tmp_xml="$(mktemp -t planetkai-slideshow.XXXXXX.xml)"
+
+  local year month day hour minute second
+  year="$(date +%Y)"; month="$(date +%m)"; day="$(date +%d)"
+  hour="$(date +%H)"; minute="$(date +%M)"; second="$(date +%S)"
+
+  {
+    printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'
+    printf '%s\n' '<!DOCTYPE wallpaper SYSTEM "gnome-wp-list.dtd">'
+    printf '%s\n' '<background>'
+    printf '%s\n' '  <starttime>'
+    printf '    <year>%s</year>\n' "$(xml_escape "$year")"
+    printf '    <month>%s</month>\n' "$(xml_escape "$month")"
+    printf '    <day>%s</day>\n' "$(xml_escape "$day")"
+    printf '    <hour>%s</hour>\n' "$(xml_escape "$hour")"
+    printf '    <minute>%s</minute>\n' "$(xml_escape "$minute")"
+    printf '    <second>%s</second>\n' "$(xml_escape "$second")"
+    printf '%s\n' '  </starttime>'
+
+    local i from to
+    for ((i = 0; i < ${#images[@]}; i++)); do
+      from="${images[$i]}"
+      to="${images[$(( (i + 1) % ${#images[@]} ))]}"
+      printf '%s\n' '  <static>'
+      printf '    <duration>%s.0</duration>\n' "$(xml_escape "$static_seconds")"
+      printf '    <file>%s</file>\n' "$(xml_escape "$from")"
+      printf '%s\n' '  </static>'
+      printf '%s\n' '  <transition>'
+      printf '    <duration>%s.0</duration>\n' "$(xml_escape "$transition_seconds")"
+      printf '    <from>%s</from>\n' "$(xml_escape "$from")"
+      printf '    <to>%s</to>\n' "$(xml_escape "$to")"
+      printf '%s\n' '  </transition>'
+    done
+    printf '%s\n' '</background>'
+  } >"$tmp_xml"
+
+  mv -f "$tmp_xml" "$out_xml"
+  ok "Generated GNOME slideshow: $out_xml"
+}
+
+set_gnome_wallpaper_to_slideshow() {
+  if [[ "${INSTALL_GNOME_WALLPAPER_SLIDESHOW:-1}" == "0" ]]; then
+    log "GNOME slideshow disabled via INSTALL_GNOME_WALLPAPER_SLIDESHOW=0 (skipping)."
+    return
+  fi
+
+  local images_dir="$HOME/Pictures/Wallpapers"
+  if [[ ! -d "$images_dir" ]]; then
+    warn "Wallpapers folder not found at $images_dir (skipping slideshow)."
+    return
+  fi
+
+  if ! have gsettings; then
+    warn "gsettings not available; skipping GNOME wallpaper slideshow."
+    return
+  fi
+  if [[ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+    warn "No desktop session detected (DBUS_SESSION_BUS_ADDRESS missing); skipping GNOME wallpaper slideshow."
+    return
+  fi
+
+  section "GNOME wallpaper"
+  local xml_path="$HOME/.local/share/backgrounds/planetkai-wallpapers.xml"
+  generate_gnome_slideshow_xml "$images_dir" "$xml_path" || return
+
+  local uri="file://${xml_path}"
+  log "Setting GNOME background to slideshow XML..."
+  gsettings set org.gnome.desktop.background picture-uri "$uri" || warn "Could not set org.gnome.desktop.background picture-uri"
+  gsettings set org.gnome.desktop.background picture-uri-dark "$uri" >/dev/null 2>&1 || true
+  gsettings set org.gnome.desktop.background picture-options "zoom" >/dev/null 2>&1 || true
+  gsettings set org.gnome.desktop.screensaver picture-uri "$uri" >/dev/null 2>&1 || true
+  ok "GNOME wallpaper slideshow configured"
+}
+
+# ---------- GNOME Extensions (extensions.gnome.org) ----------
+ego_info_json() {
+  local uuid="$1"
+  local shell_ver="$2"
+  curl -fsSL -A "Mozilla/5.0" "https://extensions.gnome.org/extension-info/?uuid=${uuid}&shell_version=${shell_ver}" 2>/dev/null || true
+}
+
+ego_extract_field() {
+  local field="$1"
+  if have jq; then
+    jq -r ".${field} // empty" 2>/dev/null | head -n 1
+    return 0
+  fi
+  sed -nE "s/.*\"${field}\"[[:space:]]*:[[:space:]]*\"([^\"]+)\".*/\\1/p" | head -n 1
+}
+
+ego_download_url() {
+  local uuid="$1"
+  local shell_ver_full="$2"
+  local shell_ver_major="$3"
+
+  local json download_path
+  if [[ -n "$shell_ver_full" ]]; then
+    json="$(ego_info_json "$uuid" "$shell_ver_full")"
+    download_path="$(printf '%s' "$json" | ego_extract_field download_url)"
+    [[ -n "$download_path" ]] && printf 'https://extensions.gnome.org%s\n' "$download_path" && return 0
+  fi
+
+  if [[ -n "$shell_ver_major" ]]; then
+    json="$(ego_info_json "$uuid" "$shell_ver_major")"
+    download_path="$(printf '%s' "$json" | ego_extract_field download_url)"
+    [[ -n "$download_path" ]] && printf 'https://extensions.gnome.org%s\n' "$download_path" && return 0
+  fi
+
+  return 1
+}
+
+install_gnome_extensions() {
+  local uuids=("$@")
+
+  if ! have gnome-shell; then
+    warn "GNOME Shell not detected; skipping GNOME extensions."
+    return
+  fi
+
+  if ! have gnome-extensions; then
+    if [[ "$PM" == "apt" ]]; then
+      log "Installing gnome-extensions tooling (best-effort)..."
+      apt_install_optional gnome-shell-extension-prefs gnome-shell-extensions
+    fi
+  fi
+
+  if ! have gnome-extensions; then
+    warn "gnome-extensions command not available; skipping GNOME extensions."
+    return
+  fi
+
+  section "GNOME extensions"
+
+  local shell_ver_raw shell_ver_full shell_ver_major
+  shell_ver_raw="$(gnome-shell --version 2>/dev/null || true)"
+  shell_ver_full="$(printf '%s' "$shell_ver_raw" | sed -nE 's/.* ([0-9]+\\.[0-9]+).*/\\1/p' | head -n 1)"
+  shell_ver_major="$(printf '%s' "$shell_ver_raw" | sed -nE 's/.* ([0-9]+).*/\\1/p' | head -n 1)"
+
+  if [[ -z "$shell_ver_full" && -z "$shell_ver_major" ]]; then
+    warn "Could not determine GNOME Shell version; skipping GNOME extensions."
+    return
+  fi
+
+  log "GNOME Shell version: ${shell_ver_full:-$shell_ver_major}"
+
+  local installed=""
+  installed="$(gnome-extensions list 2>/dev/null || true)"
+
+  local uuid
+  for uuid in "${uuids[@]}"; do
+    if printf '%s\n' "$installed" | grep -Fxq "$uuid"; then
+      ok "Extension already installed: $uuid"
+      continue
+    fi
+
+    log "Installing extension: $uuid"
+    local url tmp_zip
+    if ! url="$(ego_download_url "$uuid" "$shell_ver_full" "$shell_ver_major")"; then
+      warn "No compatible download found on extensions.gnome.org for: $uuid (skipping)"
+      continue
+    fi
+
+    tmp_zip="$(mktemp -t gnome-ext.XXXXXX.zip)"
+    if ! curl -LfsS -A "Mozilla/5.0" -o "$tmp_zip" "$url"; then
+      warn "Download failed for: $uuid (skipping)"
+      rm -f "$tmp_zip"
+      continue
+    fi
+
+    if gnome-extensions install --force "$tmp_zip" >/dev/null 2>&1 || gnome-extensions install -f "$tmp_zip" >/dev/null 2>&1; then
+      ok "Installed: $uuid"
+      installed+=$'\n'"$uuid"
+    else
+      warn "Install failed for: $uuid (skipping)"
+      rm -f "$tmp_zip"
+      continue
+    fi
+    rm -f "$tmp_zip"
+
+    if [[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ]]; then
+      if gnome-extensions enable "$uuid" >/dev/null 2>&1; then
+        ok "Enabled: $uuid"
+      else
+        warn "Installed but could not enable (try enabling in Extensions app): $uuid"
+      fi
+    else
+      warn "Installed but not enabling (no desktop session detected): $uuid"
+    fi
+  done
+}
+
+# ---------- ckb-next (Corsair keyboards/mice on Linux) ----------
+install_ckb_next() {
+  if [[ "${INSTALL_CKB_NEXT:-1}" == "0" ]]; then
+    log "ckb-next disabled via INSTALL_CKB_NEXT=0 (skipping)."
+    return
+  fi
+
+  if have ckb-next-daemon || have ckb-next; then
+    log "ckb-next already installed."
+    return
+  fi
+
+  if ! have git; then
+    warn "git not available; cannot install ckb-next (skipping)."
+    return
+  fi
+
+  section "ckb-next"
+  warn "Installing ckb-next by running upstream ./quickinstall (may install build deps + services)."
+
+  local repo_url="${CKB_NEXT_REPO_URL:-https://github.com/ckb-next/ckb-next.git}"
+  local repo_ref="${CKB_NEXT_REF:-}"
+
+  local tmp_dir repo_dir
+  tmp_dir="$(mktemp -d -t ckb-next.XXXXXX)"
+  repo_dir="$tmp_dir/ckb-next"
+
+  log "Cloning: $repo_url"
+  if ! git clone --depth=1 "$repo_url" "$repo_dir" >/dev/null 2>&1; then
+    warn "ckb-next clone failed (skipping)."
+    rm -rf "$tmp_dir"
+    return
+  fi
+
+  if [[ -n "$repo_ref" ]]; then
+    log "Checking out ref: $repo_ref"
+    ( cd "$repo_dir" && git fetch --depth=1 origin "$repo_ref" >/dev/null 2>&1 && git checkout -q "$repo_ref" ) || {
+      warn "Could not checkout CKB_NEXT_REF=$repo_ref (continuing with default)."
+    }
+  fi
+
+  log "Running ./quickinstall..."
+  ( cd "$repo_dir" && chmod +x ./quickinstall && ./quickinstall ) || {
+    warn "ckb-next quickinstall failed (skipping)."
+    rm -rf "$tmp_dir"
+    return
+  }
+
+  rm -rf "$tmp_dir"
+  ok "ckb-next install attempted"
+  warn "If udev rules/services were added, you may need to log out/in or reboot."
 }
 
 # ---------- Zsh plugins fallback ----------
 install_zsh_plugins_fallback() {
   local base="$HOME/.zsh/plugins"
   mkdir -p "$base"
+
+  # Prefer distro packages when available (faster updates), but keep git clone fallback.
+  case "$PM" in
+    apt) apt_install_optional zsh-autosuggestions zsh-syntax-highlighting ;;
+    dnf) dnf_install_optional zsh-autosuggestions zsh-syntax-highlighting ;;
+    pacman) pacman_install_optional zsh-autosuggestions zsh-syntax-highlighting ;;
+  esac
 
   if ! have git; then
     warn "git not found; can't clone zsh plugins fallback."
@@ -622,8 +1140,12 @@ EOF
 }
 
 # ===================== main =====================
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 PM="$(detect_pm)"
 read_os_release
+
+banner_draw
+banner_enable_scroll_region
 
 title "Linux bootstrap"
 log "Package manager: ${c_bold}${PM}${c_reset}"
@@ -631,7 +1153,7 @@ log "Distro: ${c_bold}${OS_ID}${c_reset} (like: ${OS_LIKE:-n/a})"
 log "Arch: ${c_bold}${ARCH}${c_reset}"
 
 # Total progress steps (roughly: big phases + key tooling).
-progress_init 17 "Initializing"
+progress_init 25 "Initializing"
 need_sudo
 progress_advance "sudo ready"
 
@@ -639,11 +1161,10 @@ APT_REQUIRED=(
   curl wget gpg ca-certificates git
   build-essential make cmake pkg-config
   libsdl2-dev libsdl2-ttf-dev libsdl2-image-dev libsdl2-mixer-dev
-  zsh tmux zip unzip
+  tmux zip unzip
   gdb valgrind ccache
   ripgrep fzf zoxide
   fonts-firacode
-  zsh-autosuggestions zsh-syntax-highlighting
 )
 
 APT_OPTIONAL=(
@@ -657,7 +1178,7 @@ APT_OPTIONAL=(
 )
 
 FLATPAKS=(
-  com.discordapp.Discord
+  dev.vencord.Vesktop
   com.visualstudio.code
   com.valvesoftware.Steam
   net.lutris.Lutris
@@ -711,10 +1232,9 @@ case "$PM" in
     sudo dnf groupinstall -y "Development Tools" || true
 
     dnf_install_optional cmake pkgconf-pkg-config SDL2-devel SDL2_ttf-devel SDL2_image-devel SDL2_mixer-devel
-    dnf_install_optional zsh tmux zip unzip unrar
+    dnf_install_optional tmux zip unzip unrar
     dnf_install_optional gdb valgrind ccache
     dnf_install_optional ripgrep fzf zoxide
-    dnf_install_optional zsh-autosuggestions zsh-syntax-highlighting
     dnf_install_optional eza gh bat
     dnf_install_optional fira-code-fonts
     dnf_install_optional cmatrix fortune-mod cowsay lolcat figlet sl ninvaders hollywood fastfetch btop qdirstat remmina vlc cool-retro-term npm
@@ -725,7 +1245,6 @@ case "$PM" in
     progress_advance "GitHub CLI"
     progress_advance "Browsers (skipped)"
     progress_advance "Java (Temurin)"
-    progress_advance "GitHub Desktop (skipped)"
     ;;
   pacman)
     section "Packages (pacman)"
@@ -733,12 +1252,11 @@ case "$PM" in
     sudo pacman -Syu --noconfirm --needed \
       curl wget gnupg ca-certificates git base-devel cmake pkgconf \
       sdl2 sdl2_ttf sdl2_image sdl2_mixer \
-      zsh tmux zip unzip || true
+      tmux zip unzip || true
 
     pacman_install_optional unrar
     pacman_install_optional gdb valgrind ccache
     pacman_install_optional ripgrep fzf zoxide
-    pacman_install_optional zsh-autosuggestions zsh-syntax-highlighting
     pacman_install_optional eza bat
     pacman_install_optional github-cli # provides "gh"
     pacman_install_optional ttf-fira-code
@@ -750,7 +1268,6 @@ case "$PM" in
     progress_advance "GitHub CLI"
     progress_advance "Browsers (skipped)"
     progress_advance "Java (skipped)"
-    progress_advance "GitHub Desktop (skipped)"
     ;;
 esac
 
@@ -762,16 +1279,63 @@ install_flatpaks "${FLATPAKS[@]}"
 ok "Flatpak apps processed"
 progress_advance "Flatpak apps"
 
-# Tooling + shell setup
-section "Tooling"
+# Wallpapers + slideshow
+copy_wallpapers_to_pictures
+progress_advance "Wallpapers"
+set_gnome_wallpaper_to_slideshow
+progress_advance "Wallpaper slideshow"
+
+# GNOME extensions
+GNOME_EXTENSIONS=(
+  add-to-desktop@tommimon.github.com
+  appindicatorsupport@rgcjonas.gmail.com
+  azwallpaper@azwallpaper.gitlab.com
+  blur-my-shell@aunetx
+  burn-my-windows@schneegans.github.com
+  clipboard-indicator@tudmotu.com
+  compiz-alike-magic-lamp-effect@hermes83.github.com
+  compiz-windows-effect@hermes83.github.com
+  CoverflowAltTab@palatis.blogspot.com
+  custom-accent-colors@demiskp
+  dash2dock-lite@icedman.github.com
+  dash-to-dock@micxgx.gmail.com
+  desktop-cube@schneegans.github.com
+  dynamic-panel@velhlkj.com
+  grand-theft-focus@zalckos.github.com
+  lockscreen-extension@pratap.fastmail.fm
+  monitor@astraext.github.io
+  notifications-alert-on-user-menu@hackedbellini.gmail.com
+  runcat@kolesnikov.se
+  simple-weather@romanlefler.com
+  transparent-top-bar@ftpix.com
+  user-theme@gnome-shell-extensions.gcampax.github.com
+)
+install_gnome_extensions "${GNOME_EXTENSIONS[@]}"
+progress_advance "GNOME extensions"
+
+# Shell setup (ordered)
+section "Shell"
+install_nerd_font
+progress_advance "Nerd Font"
+ensure_zsh_installed
+progress_advance "Zsh"
+install_oh_my_zsh
+progress_advance "Oh My Zsh"
 install_starship
 progress_advance "Starship"
+
+# Tooling + shell extras
+section "Tooling"
 install_nvm
 progress_advance "NVM"
 install_node_lts_via_nvm
 progress_advance "Node.js (LTS)"
 install_github_desktop_deb
 progress_advance "GitHub Desktop"
+install_deskflow_deb
+progress_advance "Deskflow"
+install_ckb_next
+progress_advance "ckb-next"
 install_zsh_plugins_fallback
 progress_advance "Zsh plugins"
 ensure_bat_command

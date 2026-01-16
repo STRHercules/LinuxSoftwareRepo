@@ -1,6 +1,6 @@
 # Fresh Linux Bootstrap Script
 
-This script is a **fresh-install bootstrapper** for Linux that installs a curated set of CLI/dev tools and desktop apps, then configures a consistent **Zsh + Starship + NVM** environment.
+This script is a **fresh-install bootstrapper** for Linux that installs a curated set of CLI/dev tools and desktop apps, then configures a consistent **Zsh + Oh My Zsh + Starship + NVM** environment.
 
 It’s designed to work best on **Debian/Ubuntu/Pop!_OS (APT)**, with **best-effort support** for **Fedora (DNF)** and **Arch (Pacman)**.
 
@@ -13,11 +13,14 @@ On every run, the script:
 1. Detects your package manager (**apt**, **dnf**, or **pacman**)
 2. Installs system packages (required + optional lists)
 3. Ensures Flatpak + Flathub exist and installs Flatpak apps
-4. Installs **Starship**
-5. Installs **NVM** and then installs **Node.js LTS** via NVM (sets it as default)
-6. Installs **Cursor** as an AppImage (x86_64 only) and creates a desktop entry
-7. Updates `~/.zshrc` by writing a **managed block at the end** (idempotent)
-8. Sets **Zsh as your default shell** (`chsh`)
+4. Copies repo wallpapers to `~/Pictures/Wallpapers` and (on GNOME) configures a slideshow wallpaper
+5. Installs a **Nerd Font**
+6. Installs **Zsh** + **Oh My Zsh**
+7. Installs **Starship**
+8. Installs **NVM** and then installs **Node.js LTS** via NVM (sets it as default)
+9. Installs **Cursor** as an AppImage (x86_64 only) and creates a desktop entry
+10. Updates `~/.zshrc` by writing a **managed block at the end** (idempotent)
+11. Sets **Zsh as your default shell** (`chsh`)
 
 ---
 
@@ -31,17 +34,24 @@ On every run, the script:
 
 ## How to run
 
-1. Save the script as `bootstrap.sh`
-2. Make it executable:
+Clone the repo so `bootstrap.sh` and `Wallpapers/` are both available:
+
+```bash
+git clone https://github.com/STRHercules/LinuxSoftwareRepo.git
+cd LinuxSoftwareRepo
+```
+
+Make the script executable:
    ```bash
    chmod +x bootstrap.sh
    ```
-3. Run it:
+
+Run it (as your normal user — it will prompt for `sudo` when needed):
    ```bash
-   sudo ./bootstrap.sh
+   ./bootstrap.sh
    ```
-4. Open a new terminal.
-5. Confirm the script worked;
+
+Open a new terminal and confirm the script worked:
     ```
     echo $SHELL
     zsh --version
@@ -58,6 +68,54 @@ Open a **new terminal** (or log out/in) so:
 - the **default shell** switches to Zsh
 - the updated `.zshrc` is loaded
 - `nvm`, `node`, `npm`, and Starship are available in your interactive shell
+
+---
+
+## Optional knobs (environment variables)
+
+All of these are optional; run them like:
+
+```bash
+NO_BANNER=1 INSTALL_WALLPAPERS=0 ./bootstrap.sh
+```
+
+### UI / output
+
+- `NO_COLOR=1` — disable colored output.
+- `NO_PROGRESS=1` — disable the total progress bar.
+- `NO_BANNER=1` — disable the persistent `PlanetKai` banner.
+
+### Shell / fonts
+
+- `INSTALL_NERD_FONT=0` — skip Nerd Font installation (default: install).
+- `NERD_FONT_NAME=FiraCode` — Nerd Font family to install (default: `FiraCode`).
+- `NERD_FONTS_VERSION=v3.3.0` — nerd-fonts release tag used to build the download URL.
+- `NERD_FONT_URL=...` — override the Nerd Font zip URL entirely.
+- `INSTALL_OH_MY_ZSH=0` — skip Oh My Zsh installation (default: install).
+
+### NVM / Node
+
+- `NVM_VERSION=v0.40.3` — NVM version tag to install (default: `v0.40.3`).
+
+### Desktop apps (.deb installers)
+
+- `GITHUB_DESKTOP_DEB_URL=...` — override the GitHub Desktop `.deb` URL.
+- `INSTALL_DESKFLOW=0` — skip Deskflow install (default: install).
+- `DESKFLOW_DEB_URL=...` — override the Deskflow `.deb` URL.
+
+### ckb-next
+
+- `INSTALL_CKB_NEXT=0` — skip ckb-next install (default: install).
+- `CKB_NEXT_REPO_URL=...` — override repo URL (default: `https://github.com/ckb-next/ckb-next.git`).
+- `CKB_NEXT_REF=...` — checkout a specific branch/tag/sha before running `./quickinstall`.
+
+### Wallpapers + GNOME slideshow
+
+- `INSTALL_WALLPAPERS=0` — skip copying `Wallpapers/` into `~/Pictures/Wallpapers`.
+- `WALLPAPERS_OVERWRITE=1` — overwrite/sync destination (default: don’t overwrite existing files).
+- `INSTALL_GNOME_WALLPAPER_SLIDESHOW=0` — skip GNOME `gsettings` slideshow setup (default: enable when in a GNOME session).
+- `WALLPAPER_STATIC_SECONDS=300` — seconds each wallpaper is shown.
+- `WALLPAPER_TRANSITION_SECONDS=5` — seconds for transitions.
 
 ---
 
@@ -149,7 +207,7 @@ On Fedora/Arch, Brave/Edge repo automation is not included (you can install thos
 
 The script ensures Flatpak + Flathub are set up, then installs:
 
-- Discord: `com.discordapp.Discord`
+- Vesktop: `dev.vencord.Vesktop`
 - Visual Studio Code: `com.visualstudio.code`
 - Steam: `com.valvesoftware.Steam`
 - Lutris: `net.lutris.Lutris`
