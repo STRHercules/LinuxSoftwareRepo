@@ -1,10 +1,8 @@
 # Boostrap Usage
 
 ```
-nano bootstrap.sh
-# paste script, save
 chmod +x bootstrap.sh
-./bootstrap.sh
+sudo ./bootstrap.sh
 ```
 Confirm the script worked;
 ```

@@ -11,184 +11,20 @@ set -Eeuo pipefail
 # - install Flatpaks + Flatseal
 # ------------------------------------------------------------
 
-# ---------- UI (pretty, TTY-aware) ----------
-UI_COLOR=0
-UI_UNICODE=0
-UI_PROGRESS=1
+c_reset="\033[0m"
+c_blue="\033[1;34m"
+c_yellow="\033[1;33m"
+c_red="\033[1;31m"
 
-if [[ -t 1 && "${NO_COLOR:-}" == "" && "${TERM:-}" != "dumb" ]]; then
-  UI_COLOR=1
-fi
-if [[ "${NO_PROGRESS:-}" != "" || ! -t 1 ]]; then
-  UI_PROGRESS=0
-fi
-
-_locale="${LC_ALL:-${LC_CTYPE:-${LANG:-}}}"
-if [[ "$_locale" == *"UTF-8"* || "$_locale" == *"utf8"* ]]; then
-  UI_UNICODE=1
-fi
-
-if ((UI_COLOR)); then
-  c_reset=$'\033[0m'
-  c_bold=$'\033[1m'
-  c_dim=$'\033[2m'
-  c_blue=$'\033[38;5;75m'
-  c_green=$'\033[38;5;78m'
-  c_yellow=$'\033[38;5;222m'
-  c_red=$'\033[38;5;203m'
-  c_gray=$'\033[38;5;245m'
-else
-  c_reset=""
-  c_bold=""
-  c_dim=""
-  c_blue=""
-  c_green=""
-  c_yellow=""
-  c_red=""
-  c_gray=""
-fi
-
-if ((UI_UNICODE)); then
-  i_info="ℹ"
-  i_ok="✔"
-  i_warn="⚠"
-  i_err="✖"
-  i_step="▸"
-  i_dot="•"
-  i_sub="↳"
-else
-  i_info="i"
-  i_ok="OK"
-  i_warn="!!"
-  i_err="xx"
-  i_step=">"
-  i_dot="-"
-  i_sub="->"
-fi
-
-PROGRESS_ACTIVE=0
-PROGRESS_TOTAL=0
-PROGRESS_CURRENT=0
-PROGRESS_LABEL=""
-
-progress_clear_line() {
-  ((UI_PROGRESS)) || return 0
-  ((PROGRESS_ACTIVE)) || return 0
-  printf '\r\033[2K'
-}
-
-progress_render() {
-  ((UI_PROGRESS)) || return 0
-  ((PROGRESS_ACTIVE)) || return 0
-
-  local cols width pct filled empty bar_fill bar_empty
-  cols=80
-  if have tput; then cols="$(tput cols 2>/dev/null || echo 80)"; fi
-  [[ "$cols" =~ ^[0-9]+$ ]] || cols=80
-
-  # Leave room for " 100% (NN/NN) " + label.
-  width=$((cols - 26))
-  ((width < 18)) && width=18
-  ((width > 48)) && width=48
-
-  pct=$(( PROGRESS_TOTAL > 0 ? (PROGRESS_CURRENT * 100 / PROGRESS_TOTAL) : 0 ))
-  filled=$(( PROGRESS_TOTAL > 0 ? (PROGRESS_CURRENT * width / PROGRESS_TOTAL) : 0 ))
-  empty=$((width - filled))
-
-  if ((UI_UNICODE)); then
-    bar_fill="█"
-    bar_empty="░"
-  else
-    bar_fill="#"
-    bar_empty="-"
-  fi
-
-  local bar=""
-  if ((filled > 0)); then bar+=$(printf "%*s" "$filled" "" | tr ' ' "$bar_fill"); fi
-  if ((empty > 0)); then bar+=$(printf "%*s" "$empty" "" | tr ' ' "$bar_empty"); fi
-
-  local prefix=""
-  local suffix=""
-  if ((UI_COLOR)); then
-    prefix="${c_dim}"
-    suffix="${c_reset}"
-  fi
-
-  printf '\r%s[%s]%s %3d%% (%d/%d) %s' \
-    "$prefix" "$bar" "$suffix" "$pct" "$PROGRESS_CURRENT" "$PROGRESS_TOTAL" "${PROGRESS_LABEL}"
-}
-
-progress_init() {
-  ((UI_PROGRESS)) || return 0
-  PROGRESS_TOTAL="${1:-0}"
-  PROGRESS_CURRENT=0
-  PROGRESS_LABEL="${2:-Starting…}"
-  PROGRESS_ACTIVE=1
-  progress_render
-}
-
-progress_advance() {
-  ((UI_PROGRESS)) || return 0
-  ((PROGRESS_ACTIVE)) || return 0
-  PROGRESS_LABEL="${1:-}"
-  ((PROGRESS_CURRENT < PROGRESS_TOTAL)) && PROGRESS_CURRENT=$((PROGRESS_CURRENT + 1))
-  progress_render
-}
-
-progress_finish() {
-  ((UI_PROGRESS)) || return 0
-  ((PROGRESS_ACTIVE)) || return 0
-  PROGRESS_LABEL="${1:-Done}"
-  PROGRESS_CURRENT="$PROGRESS_TOTAL"
-  progress_render
-  printf '\n'
-  PROGRESS_ACTIVE=0
-}
-
-_msg() {
-  progress_clear_line
-  printf '%b\n' "$*"
-  progress_render
-}
-
-_msg_err() {
-  progress_clear_line
-  printf '%b\n' "$*" >&2
-  progress_render
-}
-
-title() { _msg "${c_bold}${c_blue}$i_step $*${c_reset}"; }
-section() { _msg "${c_bold}${c_gray}$i_step${c_reset} ${c_bold}$*${c_reset}"; }
-log() { _msg "${c_blue}${i_info}${c_reset} $*"; }
-ok() { _msg "${c_green}${i_ok}${c_reset} $*"; }
-warn() { _msg_err "${c_yellow}${i_warn}${c_reset} $*"; }
-err() { _msg_err "${c_red}${i_err}${c_reset} $*"; }
-die() { err "$*"; exit 1; }
-
-on_err() {
-  local exit_code=$?
-  local line="${BASH_LINENO[0]:-unknown}"
-  local cmd="${BASH_COMMAND:-unknown}"
-  err "Command failed (exit ${exit_code}) at line ${line}"
-  err "${i_sub} ${cmd}"
-  exit "$exit_code"
-}
-trap on_err ERR
+log()  { echo -e "${c_blue}==>${c_reset} $*"; }
+warn() { echo -e "${c_yellow}!!${c_reset} $*" >&2; }
+die()  { echo -e "${c_red}xx${c_reset} $*" >&2; exit 1; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
 need_sudo() {
   if ! have sudo; then die "sudo is required."; fi
-  section "Elevating privileges"
-  log "Requesting sudo (you may be prompted)..."
   sudo -v
-
-  # Keep sudo alive while the script runs (avoids re-prompt mid-install).
-  # This exits automatically when the main process ends.
-  ( while true; do sudo -n true; sleep 60; kill -0 "$$" 2>/dev/null || exit; done ) 2>/dev/null &
-  SUDO_KEEPALIVE_PID=$!
-  trap 'kill "${SUDO_KEEPALIVE_PID:-}" 2>/dev/null || true' EXIT
-  ok "sudo access granted"
 }
 
 detect_pm() {
@@ -588,18 +424,11 @@ EOF
 }
 
 # ===================== main =====================
+need_sudo
 PM="$(detect_pm)"
 read_os_release
 
-title "Linux bootstrap"
-log "Package manager: ${c_bold}${PM}${c_reset}"
-log "Distro: ${c_bold}${OS_ID}${c_reset} (like: ${OS_LIKE:-n/a})"
-log "Arch: ${c_bold}${ARCH}${c_reset}"
-
-# Total progress steps (roughly: big phases + key tooling).
-progress_init 16 "Initializing"
-need_sudo
-progress_advance "sudo ready"
+log "Detected package manager: $PM (distro: $OS_ID, like: $OS_LIKE, arch: $ARCH)"
 
 APT_REQUIRED=(
   curl wget gpg ca-certificates git
@@ -636,7 +465,6 @@ FLATPAKS=(
 
 case "$PM" in
   apt)
-    section "Packages (apt)"
     log "Updating apt + installing required packages..."
     apt_update
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y software-properties-common >/dev/null 2>&1 || true
@@ -644,19 +472,15 @@ case "$PM" in
     sudo add-apt-repository -y multiverse >/dev/null 2>&1 || true
 
     apt_install_many "${APT_REQUIRED[@]}"
-    ok "Required packages installed"
-    progress_advance "Required packages"
 
     log "Installing optional apt packages (skips anything missing)..."
     apt_install_optional "${APT_OPTIONAL[@]}"
-    progress_advance "Optional packages"
 
     if ! command -v gh >/dev/null 2>&1; then
       setup_github_cli_repo_apt || true
       apt_update
       sudo DEBIAN_FRONTEND=noninteractive apt-get install -y gh || warn "gh install still failed; install manually if needed."
     fi
-    progress_advance "GitHub CLI"
 
     setup_brave_repo_apt || warn "Brave repo setup failed (skipping Brave)."
     setup_edge_repo_apt  || warn "Edge repo setup failed (skipping Edge)."
@@ -664,14 +488,11 @@ case "$PM" in
     apt_update
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y brave-browser || warn "Brave install failed."
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y microsoft-edge-stable || warn "Edge install failed."
-    progress_advance "Browsers (Brave/Edge)"
 
     setup_adoptium_repo_apt || warn "Adoptium repo setup failed (skipping Temurin JDK 25)."
     install_temurin_25
-    progress_advance "Java (Temurin)"
     ;;
   dnf)
-    section "Packages (dnf)"
     log "Installing packages via dnf (best-effort)..."
     sudo dnf install -y curl wget gpg ca-certificates git || true
     sudo dnf groupinstall -y "Development Tools" || true
@@ -686,14 +507,8 @@ case "$PM" in
     dnf_install_optional cmatrix fortune-mod cowsay lolcat figlet sl ninvaders hollywood fastfetch btop qdirstat remmina vlc cool-retro-term npm
 
     warn "Brave/Edge repo automation is apt-focused; install those manually on Fedora if desired."
-    progress_advance "Required packages"
-    progress_advance "Optional packages"
-    progress_advance "GitHub CLI"
-    progress_advance "Browsers (skipped)"
-    progress_advance "Java (Temurin)"
     ;;
   pacman)
-    section "Packages (pacman)"
     log "Installing packages via pacman (best-effort)..."
     sudo pacman -Syu --noconfirm --needed \
       curl wget gnupg ca-certificates git base-devel cmake pkgconf \
@@ -710,43 +525,23 @@ case "$PM" in
     pacman_install_optional cmatrix fortune-mod cowsay lolcat figlet sl ninvaders hollywood fastfetch btop qdirstat remmina vlc npm
 
     warn "Brave/Edge/Temurin repo automation not implemented for pacman here (AUR is distro-specific)."
-    progress_advance "Required packages"
-    progress_advance "Optional packages"
-    progress_advance "GitHub CLI"
-    progress_advance "Browsers (skipped)"
-    progress_advance "Java (skipped)"
     ;;
 esac
 
 # Flatpaks
-section "Flatpak"
 setup_flatpak
-progress_advance "Flatpak setup"
 install_flatpaks "${FLATPAKS[@]}"
-ok "Flatpak apps processed"
-progress_advance "Flatpak apps"
 
 # Tooling + shell setup
-section "Tooling"
 install_starship
-progress_advance "Starship"
 install_nvm
-progress_advance "NVM"
 install_node_lts_via_nvm
-progress_advance "Node.js (LTS)"
 install_zsh_plugins_fallback
-progress_advance "Zsh plugins"
 ensure_bat_command
-progress_advance "bat shim"
 install_cursor_appimage
-progress_advance "Cursor"
 append_managed_zshrc_block
-progress_advance "~/.zshrc"
 ensure_zsh_default
-progress_advance "Default shell"
 
-ok "All done"
+log "All done."
 warn "Open a new terminal for default shell changes + zshrc updates to fully apply."
 warn "Node is installed via NVM (LTS) and set as default."
-
-progress_finish "Complete"
